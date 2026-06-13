@@ -90,13 +90,13 @@ async function run() {
           query.$or = [
             { client_name: { $regex: search, $options: 'i' } },
             { mobile: { $regex: search, $options: 'i' } },
-            { ip: { $regex: search, $options: 'i' } },
+            { sl: { $regex: search, $options: 'i' } },
           ];
         }
 
         const result = await myColl
           .find(query)
-          .sort({ createdAt: -1 })
+          .sort({ sl: 1 })
           .toArray();
 
         res.status(200).send(result);
