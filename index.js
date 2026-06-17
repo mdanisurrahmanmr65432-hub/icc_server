@@ -86,27 +86,28 @@ app.post('/insert-client', async (req, res) => {
   }
 });
 
-// Get All Clients (🛠️ নাম্বার এবং স্ট্রিং সার্চ ফিক্সড)
+// 🔄 Get All Clients with Dynamic Promise Data (🛠️ Lookup/Join ফিক্সড)
 app.get('/get-client-data', async (req, res) => {
   try {
-    const myColl = await getCollection();
+    const db = dbConnection || (await client.connect(), client.db('icc_clients'));
+    const myColl = db.collection('users');
     const { search } = req.query;
 
-    let query = {};
+    let matchQuery = {};
 
     if (search) {
       const searchNumber = parseInt(search, 10);
       
       if (!isNaN(searchNumber)) {
         // যদি ইউজার পিওর নাম্বার লিখে সার্চ করে (যেমন: 224), তবে sl ম্যাচ করবে
-        query.$or = [
+        matchQuery.$or = [
           { sl: searchNumber },
           { client_name: { $regex: search, $options: 'i' } },
           { mobile: { $regex: search, $options: 'i' } }
         ];
       } else {
         // যদি টেক্সট সার্চ করে, তবে নাম, মোবাইল আর আইপি খুঁজবে
-        query.$or = [
+        matchQuery.$or = [
           { client_name: { $regex: search, $options: 'i' } },
           { mobile: { $regex: search, $options: 'i' } },
           { ip: { $regex: search, $options: 'i' } },
@@ -114,14 +115,48 @@ app.get('/get-client-data', async (req, res) => {
       }
     }
 
-    const result = await myColl
-      .find(query)
-      .sort({ sl: 1 })
-      .toArray();
+    // 📅 চলতি মাসের বছর ও মাস বের করা (প্রমিজ ম্যাচ করার জন্য)
+    const now = new Date();
+    const currentYear = now.getFullYear();
+    const currentMonth = now.getMonth() + 1;
+
+    // Aggregation Pipeline ব্যবহার করে ডাটাবেজ লেভেলেই Join করা হচ্ছে ফ্রন্টএন্ড গ্রিন বাটনের জন্য
+    const result = await myColl.aggregate([
+      { $match: matchQuery },
+      {
+        $lookup: {
+          from: 'promises', 
+          let: { clientIdStr: { $toString: "$_id" } }, 
+          pipeline: [
+            {
+              $match: {
+                $expr: {
+                  $and: [
+                    { $eq: ["$clientId", "$$clientIdStr"] },
+                    { $eq: ["$promise_year", currentYear] },
+                    { $eq: ["$promise_month", currentMonth] }
+                  ]
+                }
+              }
+            }
+          ],
+          as: 'current_promise'
+        }
+      },
+      {
+        $addFields: {
+          // যদি প্রমিজ থাকে তবে প্রথম অবজেক্টটি সেট করবে, না থাকলে null
+          promiseInfo: { $ifNull: [{ $arrayElemAt: ["$current_promise", 0] }, null] }
+        }
+      },
+      { $project: { current_promise: 0 } }, 
+      { $sort: { sl: 1 } }
+    ]).toArray();
 
     res.status(200).send(result);
 
   } catch (error) {
+    console.error("Fetch Clients Error:", error);
     res.status(500).send({
       success: false,
       message: error.message
@@ -202,37 +237,38 @@ app.get('/check-payment/:id', async (req, res) => {
   }
 });
 
-// ১. 🤝 পেমেন্ট প্রমিজ সেভ এবং আপডেট করার রাউট (ফাইল ও কালেকশন গ্লিচ ফিক্সড)
+// ১. 🤝 পেমেন্ট প্রমিজ সেভ এবং আপডেট করার রাউট (IP ফিল্ডসহ আপগ্রেডেড)
 app.patch('/update-promise-date', async (req, res) => {
   try {
     const db = dbConnection || (await client.connect(), client.db('icc_clients'));
-    const promiseCollection = db.collection('promises'); // কালেকশন ডিফাইন করা হলো
-    const clientCollection = db.collection('users');    // কালেকশন ডিফাইন করা হলো
+    const promiseCollection = db.collection('promises'); 
+    const clientCollection = db.collection('users');    
 
-    const { id, client_name, promise_date, promise_note, address } = req.body;
+    // ⚡ বডি থেকে ip নেওয়া হচ্ছে
+    const { id, client_name, ip, promise_date, promise_note, address } = req.body;
 
     // ভ্যালিডেশন চেক
     if (!id || !promise_date) {
       return res.status(400).send({ message: "Client ID and Promise Date are required" });
     }
 
-    // 📅 প্রমিজ ডেট থেকে বছর (Year) এবং মাস (Month) আলাদা করা
+    // 📅 প্রমিজ ডেট থেকে বছর এবং মাস আলাদা করা
     const dateObj = new Date(promise_date);
     const year = dateObj.getFullYear();
     const month = dateObj.getMonth() + 1;
 
-    // 🔍 কুয়েরি
     const query = {
       clientId: id,
       promise_year: year,
       promise_month: month
     };
 
-    // 📝 ডাটা আপডেট বা ক্রিয়েট করার অবজেক্ট
+    // 📝 ডাটা অবজেক্টে ip যুক্ত করা হলো
     const updateDoc = {
       $set: {
         clientId: id,
         client_name: client_name || '',
+        ip: ip || 'N/A', // ⚡ promises কালেকশনে আইপি সেভ হবে
         address: address || '', 
         promise_date: promise_date,
         promise_note: promise_note || '',
@@ -245,7 +281,7 @@ app.patch('/update-promise-date', async (req, res) => {
     const options = { upsert: true };
     const result = await promiseCollection.updateOne(query, updateDoc, options);
 
-    // 🔄 একই সাথে মূল clientCollection-এও লেটেস্ট প্রমিজ ডাটা আপডেট রাখা হচ্ছে
+    // 🔄 মূল clientCollection-এও লেটেস্ট প্রমিজ ডাটার সাথে আইপি আপডেট (ঐচ্ছিক, আইপি সাধারণত ফিক্সড থাকে)
     await clientCollection.updateOne(
       { _id: new ObjectId(id) },
       {
@@ -258,7 +294,7 @@ app.patch('/update-promise-date', async (req, res) => {
 
     res.send({ 
       success: true, 
-      message: "Promise recorded perfectly without conflict!", 
+      message: "Promise recorded perfectly with IP tracking!", 
       result 
     });
 
@@ -269,17 +305,20 @@ app.patch('/update-promise-date', async (req, res) => {
 });
 
 
-// 📑 প্রমিজ পেজে ফিল্টারিং এবং প্যাগিনেশনসহ (Per Page: 30) GET রাউট
+// 📑 প্রমিজ পেজে ফিল্টারিং এবং প্যাগিনেশনসহ (Per Page: 30) GET রাউট (🛠️ কালেকশন রেফারেন্স ফিক্সড)
 app.get('/get-promises-data', async (req, res) => {
   try {
+    const db = dbConnection || (await client.connect(), client.db('icc_clients'));
+    const promiseCollection = db.collection('promises'); // 👈 এই লাইনটি মিসিং ছিল, ফিক্স করা হয়েছে।
+
     const { date, address, page = 1 } = req.query;
-    const limit = 30; // 👈 রিকোয়ারমেন্ট অনুযায়ী প্রতি পেজে ৩০টি ডাটা
+    const limit = 30; // 👈 রিকোয়ারমেন্ট অনুযায়ী প্রতি পেজে ৩০টি ডাটা
     const skip = (parseInt(page) - 1) * limit;
 
-    // 🔍 ডাইনামিক কুয়েরি অবজেক্ট তৈরি
+    // 🔍 ডাইনামিক কুয়েরি অবজেক্ট তৈরি
     let query = {};
 
-    // ১. নির্দিষ্ট ডেট ফিল্টার (যদি ফ্রন্টএন্ড থেকে পাঠানো হয়)
+    // ১. নির্দিষ্ট ডেট ফিল্টার (যদি ফ্রন্টএন্ড থেকে পাঠানো হয়)
     if (date) {
       query.promise_date = date; // Format: YYYY-MM-DD
     }
@@ -334,7 +373,7 @@ app.get('/get-payments-data', async (req, res) => {
       };
     }
 
-    // ২. নাম, মোবাইল বা আইপি দিয়ে সার্চ করার লজিক (যদি থাকে)
+    // ২. নাম, মোবাইল বা আইপি দিয়ে সার্চ করার লজিক (যদি থাকে)
     if (search) {
       query.$or = [
         { client_name: { $regex: search, $options: 'i' } },
@@ -369,7 +408,7 @@ app.post('/payments', async (req, res) => {
     const db = dbConnection || (await client.connect(), client.db('icc_clients'));
     const paymentsColl = db.collection('payments'); // পেমেন্টের জন্য আলাদা কালেকশন
 
-    // কোয়েরি প্যারামিটার থেকে paidId (Client ID) নেওয়া হচ্ছে
+    // কোয়েরি প্যারামিটার থেকে paidId (Client ID) নেওয়া হচ্ছে
     const { paidId } = req.query; 
     const { amount } = req.body; // ফ্রন্টএন্ড থেকে পাঠানো অ্যামাউন্ট বা বডি ডাটা
 
@@ -377,12 +416,12 @@ app.post('/payments', async (req, res) => {
       return res.status(400).send({ success: false, message: 'Client ID (paidId) is required' });
     }
 
-    // ১. চলতি মাসের (Current Month) শুরু এবং শেষের সময় বের করা
+    // ১. চলতি মাসের (Current Month) শুরু এবং শেষের সময় বের করা
     const now = new Date();
     const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1); // মাসের ১ তারিখ 00:00:00
     const endOfMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59); // মাসের শেষ তারিখ 23:59:59
 
-    // ২. চেক করা হচ্ছে এই ক্লায়েন্ট এই মাসে অলরেডি পেমেন্ট করেছে কিনা
+    // ২. চেক করা হচ্ছে এই ক্লায়েন্ট এই মাসে অলরেডি পেমেন্ট করেছে কিনা
     const alreadyPaidThisMonth = await paymentsColl.findOne({
       clientId: new ObjectId(paidId),
       paidDate: {
@@ -398,7 +437,7 @@ app.post('/payments', async (req, res) => {
       });
     }
 
-    // ৩. ক্লায়েন্টের বাকি তথ্য (যেমন নাম) 'users' কালেকশন থেকে নিয়ে আসা
+    // ৩. ক্লায়েন্টের বাকি তথ্য (যেমন নাম) 'users' কালেকশন থেকে নিয়ে আসা
     const usersColl = db.collection('users');
     const clientData = await usersColl.findOne({ _id: new ObjectId(paidId) });
 
@@ -406,17 +445,17 @@ app.post('/payments', async (req, res) => {
       return res.status(404).send({ success: false, message: 'Client not found' });
     }
 
-    // ৪. পেমেন্টের জন্য নতুন অবজেক্ট তৈরি (receiptNo যুক্ত করা হয়েছে)
-const paymentInfo = {
-  clientId: clientData._id,
-  client_name: clientData.client_name,
-  mobile: clientData.mobile || 'N/A',
-  ip: clientData.ip || 'N/A',
-  amount: parseInt(amount, 10) || clientData.amount || 0,
-  receiptNo: req.body.receiptNo, // ফ্রন্টএন্ড থেকে পাঠানো রসিদ নম্বরটি সেভ হবে
-  paidDate: new Date(),
-  status: 'Paid'
-};
+    // ৪. পেমেন্টের জন্য নতুন অবজেক্ট তৈরি (receiptNo যুক্ত করা হয়েছে)
+    const paymentInfo = {
+      clientId: clientData._id,
+      client_name: clientData.client_name,
+      mobile: clientData.mobile || 'N/A',
+      ip: clientData.ip || 'N/A',
+      amount: parseInt(amount, 10) || clientData.amount || 0,
+      receiptNo: req.body.receiptNo, // ফ্রন্টএন্ড থেকে পাঠানো রসিদ নম্বরটি সেভ হবে
+      paidDate: new Date(),
+      status: 'Paid'
+    };
 
     // ৫. ডাটাবেজে পেমেন্ট সেভ করা
     const result = await paymentsColl.insertOne(paymentInfo);
