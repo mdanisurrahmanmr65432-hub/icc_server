@@ -202,6 +202,115 @@ app.get('/check-payment/:id', async (req, res) => {
   }
 });
 
+// ১. 🤝 পেমেন্ট প্রমিজ সেভ এবং আপডেট করার রাউট (Add & PATCH একসাথে)
+app.patch('/update-promise-date', async (req, res) => {
+  try {
+    const { id, client_name, promise_date, promise_note, address } = req.body;
+
+    // ভ্যালিডেশন চেক
+    if (!id || !promise_date) {
+      return res.status(400).send({ message: "Client ID and Promise Date are required" });
+    }
+
+    // 📅 প্রমিজ ডেট থেকে বছর (Year) এবং মাস (Month) আলাদা করা (Format: YYYY-MM-DD)
+    const dateObj = new Date(promise_date);
+    const year = dateObj.getFullYear();
+    const month = dateObj.getMonth() + 1; // JS-এ মাস 0 থেকে শুরু হয় তাই +1
+
+    // 🔍 কুয়েরি: একই ক্লায়েন্ট আইডি এবং একই মাস ও বছরের কোনো প্রমিজ আছে কিনা চেক
+    const query = {
+      clientId: id,
+      promise_year: year,
+      promise_month: month
+    };
+
+    // 📝 ডাটা আপডেট বা ক্রিয়েট করার অবজেক্ট
+    const updateDoc = {
+      $set: {
+        clientId: id,
+        client_name: client_name,
+        address: address || '', // ফিল্টারিং সহজ করার জন্য অ্যাড্রেসও প্রমিজ কালেকশনে রাখা হলো
+        promise_date: promise_date,
+        promise_note: promise_note || '',
+        promise_year: year,
+        promise_month: month,
+        updatedAt: new Date()
+      }
+    };
+
+    // 🔄 upsert: true দেওয়ার কারণে ম্যাচিং ডাটা পেলে আপডেট করবে, না পেলে নতুন অ্যাড (Insert) করবে
+    const options = { upsert: true };
+    const result = await promiseCollection.updateOne(query, updateDoc, options);
+
+    // 🔄 একই সাথে মূল clientCollection-এও লেটেস্ট প্রমিজ ট্র্যাকিং আপডেট করে রাখা হচ্ছে
+    await clientCollection.updateOne(
+      { _id: new ObjectId(id) },
+      {
+        $set: {
+          latest_promise_date: promise_date,
+          latest_promise_note: promise_note || ''
+        }
+      }
+    );
+
+    res.send({ 
+      success: true, 
+      message: "Promise recorded perfectly without conflict!", 
+      result 
+    });
+
+  } catch (error) {
+    console.error("Promise Patch/Add Error:", error);
+    res.status(500).send({ message: "Internal Server Error" });
+  }
+});
+
+
+// 📑 প্রমিজ পেজে ফিল্টারিং এবং প্যাগিনেশনসহ (Per Page: 30) GET রাউট
+app.get('/get-promises-data', async (req, res) => {
+  try {
+    const { date, address, page = 1 } = req.query;
+    const limit = 30; // 👈 রিকোয়ারমেন্ট অনুযায়ী প্রতি পেজে ৩০টি ডাটা
+    const skip = (parseInt(page) - 1) * limit;
+
+    // 🔍 ডাইনামিক কুয়েরি অবজেক্ট তৈরি
+    let query = {};
+
+    // ১. নির্দিষ্ট ডেট ফিল্টার (যদি ফ্রন্টএন্ড থেকে পাঠানো হয়)
+    if (date) {
+      query.promise_date = date; // Format: YYYY-MM-DD
+    }
+
+    // ২. অ্যাড্রেস/লোকেশন সার্চ ফিল্টার (Case-Insensitive)
+    if (address) {
+      query.address = { $regex: address, $options: 'i' };
+    }
+
+    // 🗂️ মোট কতগুলো ম্যাচিং ডাটা আছে তা কাউন্ট করা (প্যাগিনেশনের জন্য জরুরি)
+    const totalPromises = await promiseCollection.countDocuments(query);
+
+    // 🔄 ডাটা ফেচ করা (Pagination + Sorting)
+    const promisesData = await promiseCollection
+      .find(query)
+      .sort({ promise_date: 1 }) // সামনের ডেটগুলো আগে দেখাবে
+      .skip(skip)
+      .limit(limit)
+      .toArray();
+
+    // 📤 ফ্রন্টএন্ডে টোটাল কাউন্ট ও ডাটা একসাথে পাঠানো
+    res.send({
+      totalPromises,
+      totalPages: Math.ceil(totalPromises / limit) || 1,
+      currentPage: parseInt(page),
+      data: promisesData
+    });
+
+  } catch (error) {
+    console.error("Fetch Promises Error:", error);
+    res.status(500).send({ message: "Internal Server Error" });
+  }
+});
+
 
 // 📑 Get Payments History with Advanced Date Filtering
 app.get('/get-payments-data', async (req, res) => {
