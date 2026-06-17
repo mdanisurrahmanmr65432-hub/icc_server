@@ -202,9 +202,13 @@ app.get('/check-payment/:id', async (req, res) => {
   }
 });
 
-// ১. 🤝 পেমেন্ট প্রমিজ সেভ এবং আপডেট করার রাউট (Add & PATCH একসাথে)
+// ১. 🤝 পেমেন্ট প্রমিজ সেভ এবং আপডেট করার রাউট (ফাইল ও কালেকশন গ্লিচ ফিক্সড)
 app.patch('/update-promise-date', async (req, res) => {
   try {
+    const db = dbConnection || (await client.connect(), client.db('icc_clients'));
+    const promiseCollection = db.collection('promises'); // কালেকশন ডিফাইন করা হলো
+    const clientCollection = db.collection('users');    // কালেকশন ডিফাইন করা হলো
+
     const { id, client_name, promise_date, promise_note, address } = req.body;
 
     // ভ্যালিডেশন চেক
@@ -212,24 +216,24 @@ app.patch('/update-promise-date', async (req, res) => {
       return res.status(400).send({ message: "Client ID and Promise Date are required" });
     }
 
-    // 📅 প্রমিজ ডেট থেকে বছর (Year) এবং মাস (Month) আলাদা করা (Format: YYYY-MM-DD)
+    // 📅 প্রমিজ ডেট থেকে বছর (Year) এবং মাস (Month) আলাদা করা
     const dateObj = new Date(promise_date);
     const year = dateObj.getFullYear();
-    const month = dateObj.getMonth() + 1; // JS-এ মাস 0 থেকে শুরু হয় তাই +1
+    const month = dateObj.getMonth() + 1;
 
-    // 🔍 কুয়েরি: একই ক্লায়েন্ট আইডি এবং একই মাস ও বছরের কোনো প্রমিজ আছে কিনা চেক
+    // 🔍 কুয়েরি
     const query = {
       clientId: id,
       promise_year: year,
       promise_month: month
     };
 
-    // 📝 ডাটা আপডেট বা ক্রিয়েট করার অবজেক্ট
+    // 📝 ডাটা আপডেট বা ক্রিয়েট করার অবজেক্ট
     const updateDoc = {
       $set: {
         clientId: id,
-        client_name: client_name,
-        address: address || '', // ফিল্টারিং সহজ করার জন্য অ্যাড্রেসও প্রমিজ কালেকশনে রাখা হলো
+        client_name: client_name || '',
+        address: address || '', 
         promise_date: promise_date,
         promise_note: promise_note || '',
         promise_year: year,
@@ -238,11 +242,10 @@ app.patch('/update-promise-date', async (req, res) => {
       }
     };
 
-    // 🔄 upsert: true দেওয়ার কারণে ম্যাচিং ডাটা পেলে আপডেট করবে, না পেলে নতুন অ্যাড (Insert) করবে
     const options = { upsert: true };
     const result = await promiseCollection.updateOne(query, updateDoc, options);
 
-    // 🔄 একই সাথে মূল clientCollection-এও লেটেস্ট প্রমিজ ট্র্যাকিং আপডেট করে রাখা হচ্ছে
+    // 🔄 একই সাথে মূল clientCollection-এও লেটেস্ট প্রমিজ ডাটা আপডেট রাখা হচ্ছে
     await clientCollection.updateOne(
       { _id: new ObjectId(id) },
       {
@@ -261,7 +264,7 @@ app.patch('/update-promise-date', async (req, res) => {
 
   } catch (error) {
     console.error("Promise Patch/Add Error:", error);
-    res.status(500).send({ message: "Internal Server Error" });
+    res.status(500).send({ message: error.message || "Internal Server Error" });
   }
 });
 
@@ -425,6 +428,53 @@ const paymentInfo = {
     });
 
   } catch (error) {
+    res.status(500).send({
+      success: false,
+      message: error.message
+    });
+  }
+});
+
+
+// 📝 ক্লায়েন্টের সমস্ত তথ্য এডিট/আপডেট করার রাউট
+app.patch('/update-client', async (req, res) => {
+  try {
+    const myColl = await getCollection();
+    const { id, client_name, mobile, ip, zone, speed, amount, address } = req.body;
+
+    if (!id) {
+      return res.status(400).send({ success: false, message: 'Client ID is required' });
+    }
+
+    // ডাটাবেজে সেভ করার আগে টাইপ ফিক্সিং এবং অবজেক্ট তৈরি
+    const updateData = {
+      client_name,
+      mobile,
+      ip,
+      zone: zone || '',
+      speed: speed || '',
+      amount: parseInt(amount, 10) || 0, // স্ট্রিং থেকে নাম্বারে কনভার্ট
+      address: address || '',
+      updatedAt: new Date()
+    };
+
+    const result = await myColl.updateOne(
+      { _id: new ObjectId(id) },
+      { $set: updateData }
+    );
+
+    if (result.matchedCount === 0) {
+      return res.status(404).send({ success: false, message: 'Client not found' });
+    }
+
+    res.status(200).send({
+      success: true,
+      message: 'Client updated successfully ✔️',
+      result
+    });
+
+  } catch (error) {
+    console.error("Update Client Error:", error);
     res.status(500).send({
       success: false,
       message: error.message
