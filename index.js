@@ -384,7 +384,7 @@ app.get('/get-payments-data', async (req, res) => {
 
     const result = await paymentsColl
       .find(query)
-      .sort({ paidDate: -1 }) // লেটেস্ট পেমেন্ট আগে দেখাবে
+      .sort({ paidDate: 1 }) // লেটেস্ট পেমেন্ট আগে দেখাবে
       .toArray();
 
     res.status(200).send({
@@ -450,12 +450,15 @@ app.post('/payments', async (req, res) => {
       clientId: clientData._id,
       client_name: clientData.client_name,
       mobile: clientData.mobile || 'N/A',
+      sl: clientData.sl || 'N/A',
       ip: clientData.ip || 'N/A',
       amount: parseInt(amount, 10) || clientData.amount || 0,
       receiptNo: req.body.receiptNo, // ফ্রন্টএন্ড থেকে পাঠানো রসিদ নম্বরটি সেভ হবে
       paidDate: new Date(),
       status: 'Paid'
     };
+
+    
 
     // ৫. ডাটাবেজে পেমেন্ট সেভ করা
     const result = await paymentsColl.insertOne(paymentInfo);
@@ -479,7 +482,7 @@ app.post('/payments', async (req, res) => {
 app.patch('/update-client', async (req, res) => {
   try {
     const myColl = await getCollection();
-    const { id, client_name, mobile, ip, zone, speed, amount, address } = req.body;
+    const { id, client_name, mobile, ip, zone, speed, amount, address, status } = req.body;
 
     if (!id) {
       return res.status(400).send({ success: false, message: 'Client ID is required' });
@@ -494,6 +497,7 @@ app.patch('/update-client', async (req, res) => {
       speed: speed || '',
       amount: parseInt(amount, 10) || 0, // স্ট্রিং থেকে নাম্বারে কনভার্ট
       address: address || '',
+      status: status || '', 
       updatedAt: new Date()
     };
 
