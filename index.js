@@ -180,6 +180,149 @@ app.delete('/delete-client/:id', async (req, res) => {
   }
 });
 
+// পেমেন্ট চেক করার API
+app.get('/check-payment/:id', async (req, res) => {
+  try {
+    const db = dbConnection || (await client.connect(), client.db('icc_clients'));
+    const paymentsColl = db.collection('payments');
+    const { id } = req.params;
+
+    const now = new Date();
+    const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+    const endOfMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59);
+
+    const paid = await paymentsColl.findOne({
+      clientId: new ObjectId(id),
+      paidDate: { $gte: startOfMonth, $lte: endOfMonth }
+    });
+
+    res.send({ isPaid: !!paid }); // থাকলে true, না থাকলে false পাঠাবে
+  } catch (error) {
+    res.status(500).send({ message: error.message });
+  }
+});
+
+
+// 📑 Get Payments History with Advanced Date Filtering
+app.get('/get-payments-data', async (req, res) => {
+  try {
+    const db = dbConnection || (await client.connect(), client.db('icc_clients'));
+    const paymentsColl = db.collection('payments');
+
+    // ফ্রন্টএন্ড থেকে startDate এবং endDate পাঠানো হবে (Format: YYYY-MM-DD)
+    const { startDate, endDate, search } = req.query;
+
+    let query = {};
+
+    // ১. ডেট ফিল্টারিং লজিক
+    if (startDate && endDate) {
+      query.paidDate = {
+        $gte: new Date(`${startDate}T00:00:00.000Z`),
+        $lte: new Date(`${endDate}T23:59:59.999Z`)
+      };
+    }
+
+    // ২. নাম, মোবাইল বা আইপি দিয়ে সার্চ করার লজিক (যদি থাকে)
+    if (search) {
+      query.$or = [
+        { client_name: { $regex: search, $options: 'i' } },
+        { mobile: { $regex: search, $options: 'i' } },
+        { ip: { $regex: search, $options: 'i' } }
+      ];
+    }
+
+    const result = await paymentsColl
+      .find(query)
+      .sort({ paidDate: -1 }) // লেটেস্ট পেমেন্ট আগে দেখাবে
+      .toArray();
+
+    res.status(200).send({
+      success: true,
+      totalPayments: result.length,
+      data: result
+    });
+
+  } catch (error) {
+    res.status(500).send({
+      success: false,
+      message: error.message
+    });
+  }
+});
+
+
+/// 💳 Payments Collection API (একই মাসে ডাবল পেমেন্ট আটকানোর লজিকসহ)
+app.post('/payments', async (req, res) => {
+  try {
+    const db = dbConnection || (await client.connect(), client.db('icc_clients'));
+    const paymentsColl = db.collection('payments'); // পেমেন্টের জন্য আলাদা কালেকশন
+
+    // কোয়েরি প্যারামিটার থেকে paidId (Client ID) নেওয়া হচ্ছে
+    const { paidId } = req.query; 
+    const { amount } = req.body; // ফ্রন্টএন্ড থেকে পাঠানো অ্যামাউন্ট বা বডি ডাটা
+
+    if (!paidId) {
+      return res.status(400).send({ success: false, message: 'Client ID (paidId) is required' });
+    }
+
+    // ১. চলতি মাসের (Current Month) শুরু এবং শেষের সময় বের করা
+    const now = new Date();
+    const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1); // মাসের ১ তারিখ 00:00:00
+    const endOfMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59); // মাসের শেষ তারিখ 23:59:59
+
+    // ২. চেক করা হচ্ছে এই ক্লায়েন্ট এই মাসে অলরেডি পেমেন্ট করেছে কিনা
+    const alreadyPaidThisMonth = await paymentsColl.findOne({
+      clientId: new ObjectId(paidId),
+      paidDate: {
+        $gte: startOfMonth,
+        $lte: endOfMonth
+      }
+    });
+
+    if (alreadyPaidThisMonth) {
+      return res.status(400).send({
+        success: false,
+        message: 'This client has already paid for the current month!'
+      });
+    }
+
+    // ৩. ক্লায়েন্টের বাকি তথ্য (যেমন নাম) 'users' কালেকশন থেকে নিয়ে আসা
+    const usersColl = db.collection('users');
+    const clientData = await usersColl.findOne({ _id: new ObjectId(paidId) });
+
+    if (!clientData) {
+      return res.status(404).send({ success: false, message: 'Client not found' });
+    }
+
+    // ৪. পেমেন্টের জন্য নতুন অবজেক্ট তৈরি (receiptNo যুক্ত করা হয়েছে)
+const paymentInfo = {
+  clientId: clientData._id,
+  client_name: clientData.client_name,
+  mobile: clientData.mobile || 'N/A',
+  ip: clientData.ip || 'N/A',
+  amount: parseInt(amount, 10) || clientData.amount || 0,
+  receiptNo: req.body.receiptNo, // ফ্রন্টএন্ড থেকে পাঠানো রসিদ নম্বরটি সেভ হবে
+  paidDate: new Date(),
+  status: 'Paid'
+};
+
+    // ৫. ডাটাবেজে পেমেন্ট সেভ করা
+    const result = await paymentsColl.insertOne(paymentInfo);
+
+    res.status(201).send({
+      success: true,
+      message: 'Payment completed successfully ✔️',
+      result
+    });
+
+  } catch (error) {
+    res.status(500).send({
+      success: false,
+      message: error.message
+    });
+  }
+});
+
 // Root Route
 app.get('/', (req, res) => {
   res.send('ICC Client Server Running');
