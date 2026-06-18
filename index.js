@@ -49,6 +49,15 @@ app.post('/insert-client', async (req, res) => {
     const myColl = await getCollection();
     const body = req.body;
 
+    // ১. ব্যাকএন্ডে ডাটা টাইপ নিশ্চিত করা (ডাটাবেজ সেফটি)
+    if (body.sl) {
+      body.sl = parseInt(body.sl, 10);
+    }
+    if (body.amount) {
+      body.amount = parseFloat(body.amount) || 0; // বিল অ্যামাউন্ট অবশ্যই নাম্বারে কনভার্ট হবে
+    }
+
+    // ২. ডুপ্লিকেট ক্লায়েন্ট চেক (মোবাইল অথবা আইপি)
     const existingClient = await myColl.findOne({
       $or: [
         { mobile: body.mobile },
@@ -57,31 +66,31 @@ app.post('/insert-client', async (req, res) => {
     });
 
     if (existingClient) {
-      return res.status(400).send({
+      // ডুপ্লিকেট পাওয়া গেলে সরাসরি ৪০০ রেসপন্স পাঠিয়ে রিটার্ন
+      return res.status(400).json({
         success: false,
-        message: 'Client already exists'
+        message: 'Client with this IP or Mobile already exists!'
       });
     }
 
+    // ৩. ডিফল্ট প্রপার্টিজ সেট করা
     body.createdAt = new Date();
     body.status = 'Active';
 
-    // ফ্রন্টএন্ড থেকে sl স্ট্রিং হিসেবে আসলেও ডাটাবেজে নাম্বার হিসেবে সেভ হবে
-    if (body.sl) {
-      body.sl = parseInt(body.sl, 10) || body.sl;
-    }
-
+    // ৪. ডাটাবেজে ইনসার্ট
     const result = await myColl.insertOne(body);
 
-    res.status(201).send({
+    // ৫. সাকসেস রেসপন্স
+    return res.status(201).json({
       success: true,
       result
     });
 
   } catch (error) {
-    res.status(500).send({
+    console.error("Backend Error:", error); // ডিবাগিং এর জন্য কনসোলে এরর প্রিন্ট
+    return res.status(500).json({
       success: false,
-      message: error.message
+      message: error.message || 'Internal Server Error'
     });
   }
 });
