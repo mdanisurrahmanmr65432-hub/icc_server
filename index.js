@@ -369,20 +369,24 @@ app.get('/get-payments-data', async (req, res) => {
     const db = dbConnection || (await client.connect(), client.db('icc_clients'));
     const paymentsColl = db.collection('payments');
 
-    // ফ্রন্টএন্ড থেকে startDate এবং endDate পাঠানো হবে (Format: YYYY-MM-DD)
     const { startDate, endDate, search } = req.query;
-
     let query = {};
 
-    // ১. ডেট ফিল্টারিং লজিক
+    // ১. ডেট ফিল্টারিং লজিক (বাংলাদেশ টাইমজোন ফিক্স)
     if (startDate && endDate) {
+      // ফ্রন্টএন্ড থেকে আসা YYYY-MM-DD ফরম্যাটের সাথে বাংলাদেশের শুরুর সময় (00:00) ও শেষের সময় (23:59) যোগ করা হচ্ছে
+      // এবং সেটি সরাসরি ISO স্ট্রিং হিসেবে পাস করা হচ্ছে, যা ডাটাবেজের টাইমজোনের সাথে পারফেক্টলি মিলবে।
+      
+      const startIso = new Date(`${startDate}T00:00:00.000+06:00`); // ⚡ বাংলাদেশ সময় রাত ১২:০০ টা
+      const endIso = new Date(`${endDate}T23:59:59.999+06:00`);   // ⚡ বাংলাদেশ সময় রাত ১১:৫৯ টা
+
       query.paidDate = {
-        $gte: new Date(`${startDate}T00:00:00.000Z`),
-        $lte: new Date(`${endDate}T23:59:59.999Z`)
+        $gte: startIso,
+        $lte: endIso
       };
     }
 
-    // ২. নাম, মোবাইল বা আইপি দিয়ে সার্চ করার লজিক (যদি থাকে)
+    // ২. সার্চ লজিক
     if (search) {
       query.$or = [
         { client_name: { $regex: search, $options: 'i' } },
@@ -391,9 +395,10 @@ app.get('/get-payments-data', async (req, res) => {
       ];
     }
 
+    // .sort({ paidDate: -1 }) করলে লেটেস্টগুলো আগে দেখাবে, আপনার কোডে ১ ছিল (ওল্ড আগে দেখাতো)
     const result = await paymentsColl
       .find(query)
-      .sort({ paidDate: 1 }) // লেটেস্ট পেমেন্ট আগে দেখাবে
+      .sort({ paidDate: -1 }) 
       .toArray();
 
     res.status(200).send({
