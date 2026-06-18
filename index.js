@@ -496,7 +496,7 @@ app.post('/payments', async (req, res) => {
 app.patch('/update-client', async (req, res) => {
   try {
     const myColl = await getCollection();
-    const { id, client_name, mobile, ip, zone, speed, amount, address, status } = req.body;
+    const { id, sl, client_name, mobile, ip, zone, speed, amount, address, status } = req.body;
 
     if (!id) {
       return res.status(400).send({ success: false, message: 'Client ID is required' });
@@ -504,14 +504,15 @@ app.patch('/update-client', async (req, res) => {
 
     // ডাটাবেজে সেভ করার আগে টাইপ ফিক্সিং এবং অবজেক্ট তৈরি
     const updateData = {
+      sl: parseInt(sl, 10) || 0, // ⚡ sl কে স্ট্রিং থেকে নাম্বারে কনভার্ট করা হলো
       client_name,
       mobile,
       ip,
       zone: zone || '',
       speed: speed || '',
-      amount: parseInt(amount, 10) || 0, // স্ট্রিং থেকে নাম্বারে কনভার্ট
+      amount: parseInt(amount, 10) || 0, 
       address: address || '',
-      status: status || '', 
+      status: status || 'Active', 
       updatedAt: new Date()
     };
 
