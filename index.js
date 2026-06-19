@@ -363,6 +363,64 @@ app.get('/get-promises-data', async (req, res) => {
 });
 
 
+// 🔴 চলতি মাসের আনপেইড (বকেয়া) ইউজারদের ডাটা ফেচ করার রাউট
+app.get('/get-unpaid-users', async (req, res) => {
+  try {
+    const db = dbConnection || (await client.connect(), client.db('icc_clients'));
+    const usersColl = db.collection('users');
+    const paymentsColl = db.collection('payments');
+    const { zone } = req.query;
+
+    // ১. চলতি মাসের শুরু এবং শেষ সময় নির্ধারণ (বাংলাদেশ টাইমজোন অনুযায়ী)
+    const now = new Date();
+    const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1); // মাসের ১ তারিখ ০০:০০
+    const endOfMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59); // মাসের শেষ তারিখ ২৩:৫৯
+
+    // ২. চলতি মাসে অলরেডি পেমেন্ট করেছে এমন সব ক্লায়েন্টদের ID লিস্ট বের করা
+    const paidClientsThisMonth = await paymentsColl.find({
+      paidDate: {
+        $gte: startOfMonth,
+        $lte: endOfMonth
+      }
+    }).project({ clientId: 1, _id: 0 }).toArray();
+
+    // অবজেক্ট আইডি-গুলোকে একটি অ্যারে বা লিস্টে রূপান্তর
+    const paidClientIds = paidClientsThisMonth.map(p => new ObjectId(p.clientId));
+
+    // ৩. কুয়েরি তৈরি করা (যারা এই মাসে পেইড আইডির লিস্টে নেই এবং যাদের স্ট্যাটাস Active)
+    let query = {
+      _id: { $nin: paidClientIds }, // যারা পেমেন্ট করেনি
+      status: 'Active'              // শুধুমাত্র একটিভ ইউজারদের বকেয়া হিসাব হবে
+    };
+
+    // যদি ফ্রন্টএন্ড থেকে নির্দিষ্ট জোন সিলেক্ট করা হয়
+    if (zone && zone !== 'all') {
+      query.zone = { $regex: zone, $options: 'i' };
+    }
+
+    // ৪. ডাটাবেজ থেকে বকেয়া ইউজারদের নিয়ে আসা এবং sl অনুযায়ী সিরিয়াল করা
+    const result = await usersColl
+      .find(query)
+      .sort({ sl: 1 })
+      .toArray();
+
+    // ৫. ফ্রন্টএন্ডে ডাটা রেসপন্স পাঠানো
+    res.status(200).send({
+      success: true,
+      totalUnpaid: result.length,
+      data: result
+    });
+
+  } catch (error) {
+    console.error("Fetch Unpaid Users Error:", error);
+    res.status(500).send({
+      success: false,
+      message: error.message || 'Internal Server Error'
+    });
+  }
+});
+
+
 // 📑 Get Payments History with Advanced Date Filtering
 app.get('/get-payments-data', async (req, res) => {
   try {
